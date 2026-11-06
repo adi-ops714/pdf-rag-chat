@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDF Chat</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:wght@500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#f4f6f8;--panel:#fff;--ink:#1d2733;--mute:#6a7682;--line:#dde2e8;--accent:#27506f;--mark:#ffe066;--ok:#2e7d4f;--warn:#b7791f;--bad:#b3392f}
+@media (prefers-color-scheme:dark){:root{--bg:#12171c;--panel:#1a2128;--ink:#e6ebf0;--mute:#8b97a3;--line:#2a333c;--accent:#7fb2d9;--mark:#6b5a10}}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.5 Inter,system-ui,sans-serif;background:var(--bg);color:var(--ink);height:100vh;display:grid;grid-template-columns:320px 1fr}
+h1,h2{font-family:Newsreader,Georgia,serif;margin:0}
+button{font:inherit;cursor:pointer;border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:6px;padding:5px 10px}
+button:hover{border-color:var(--accent)}button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+aside{border-right:1px solid var(--line);padding:18px;overflow:auto;background:var(--panel)}
+aside h1{font-size:24px;margin-bottom:12px}
+.drop{border:1.5px dashed var(--line);border-radius:8px;padding:14px;text-align:center;color:var(--mute);margin-bottom:14px}
+.drop.over{border-color:var(--accent);color:var(--accent)}
+.doc{border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:10px}
+.doc.sel{border-color:var(--accent)}
+.doc .name{font-weight:600;word-break:break-word}
+.meta{color:var(--mute);font-size:12.5px}
+.badge{font-size:12px;font-weight:600;padding:1px 8px;border-radius:99px;border:1px solid currentColor}
+.Completed{color:var(--ok)}.Processing,.Pending{color:var(--warn)}.Failed{color:var(--bad)}
+.row{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;align-items:center}
+.row label{font-size:13px;color:var(--mute)}
+main{display:flex;flex-direction:column;min-width:0;height:100vh}
+#msgs{flex:1;overflow:auto;padding:24px;display:flex;flex-direction:column;gap:16px}
+.msg{max-width:760px;padding:12px 16px;border-radius:10px;white-space:pre-wrap}
+.msg.user{align-self:flex-end;background:var(--accent);color:#fff}
+.msg.assistant{background:var(--panel);border:1px solid var(--line)}
+.cite{background:var(--mark);color:inherit;border:0;padding:0 5px;border-radius:3px;font-size:12px;font-weight:600}
+.src{margin-top:10px;border-left:3px solid var(--mark);padding:4px 10px;font-size:13px;cursor:pointer;white-space:normal}
+.src:hover{background:var(--bg)}.src b{font-weight:600}
+.empty{margin:auto;text-align:center;color:var(--mute);max-width:420px}
+.empty h2{color:var(--ink);font-size:26px;margin-bottom:6px}
+form{display:flex;gap:8px;padding:14px 24px;border-top:1px solid var(--line);background:var(--panel)}
+form input{flex:1;padding:10px 12px;border:1px solid var(--line);border-radius:8px;font:inherit;background:var(--bg);color:var(--ink)}
+dialog{border:1px solid var(--line);border-radius:10px;padding:0;background:var(--panel);color:var(--ink);width:min(900px,94vw);height:88vh}
+dialog::backdrop{background:rgba(0,0,0,.45)}
+dialog header{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line)}
+dialog iframe{width:100%;height:calc(100% - 100px);border:0}
+dialog .snip{padding:8px 14px;font-size:13px;background:var(--bg);max-height:56px;overflow:auto}
+dialog .snip mark{background:var(--mark);color:inherit}
+#sumBody{padding:16px 20px;overflow:auto;height:calc(100% - 50px)}
+#sumBody h3{font-family:Newsreader,serif;margin:16px 0 4px}
+@media(max-width:800px){body{grid-template-columns:1fr;grid-template-rows:auto 1fr;height:auto}aside{border-right:0;border-bottom:1px solid var(--line)}main{height:80vh}}
+</style>
+</head>
+<body>
+<aside>
+  <h1>PDF Chat</h1>
+  <div class="drop" id="drop">Drop PDFs here or <button id="pick">choose files</button>
+    <input type="file" id="file" accept="application/pdf" multiple hidden></div>
+  <div id="docs"></div>
+</aside>
+<main>
+  <div id="msgs"></div>
+  <form id="form">
+    <input id="q" placeholder="Ask about your documents" autocomplete="off" required>
+    <button class="primary">Ask</button>
+    <button type="button" id="clear">Clear chat</button>
+  </form>
+</main>
+
+<dialog id="pdfDlg">
+  <header><strong id="pdfTitle"></strong><button id="pdfClose">Close</button></header>
+  <div class="snip" id="pdfSnip"></div>
+  <iframe id="pdfFrame" title="PDF viewer"></iframe>
+</dialog>
+<dialog id="sumDlg">
+  <header><strong id="sumTitle"></strong><button id="sumClose">Close</button></header>
+  <div id="sumBody"></div>
+</dialog>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const session = localStorage.sid || (localStorage.sid = crypto.randomUUID());
+let docs = [], selected = new Set(), sources = {};
+
+const size = b => b > 1e6 ? (b/1e6).toFixed(1)+' MB' : Math.ceil(b/1e3)+' KB';
+async function api(url, opt) {
+  const r = await fetch(url, opt);
+  if (!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || r.statusText);
+  return r.json();
+}
+
+/* ---------- documents ---------- */
+async function loadDocs() {
+  docs = await api('/api/documents');
+  renderDocs();
+  if (docs.some(d => ['Pending','Processing'].includes(d.status))) setTimeout(loadDocs, 2000);
+}
+function renderDocs() {
+  $('#docs').innerHTML = docs.length ? docs.map(d => `
+    <div class="doc ${selected.has(d.id)?'sel':''}">
+      <div class="name">${esc(d.name)}</div>
+      <div class="meta">${size(d.size)} · ${d.pages} pages · ${esc(d.uploaded_at)}</div>
+      <div class="row"><span class="badge ${d.status}">${d.status}</span>
+        ${d.error ? `<span class="meta">${esc(d.error)}</span>` : ''}</div>
+      <div class="row">
+        <label><input type="checkbox" data-sel="${d.id}" ${selected.has(d.id)?'checked':''}> Search only this</label>
+      </div>
+      <div class="row">
+        <button data-open="${d.id}">Open</button>
+        <button data-sum="${d.id}:short" ${d.status!=='Completed'?'disabled':''}>Short summary</button>
+        <button data-sum="${d.id}:detailed" ${d.status!=='Completed'?'disabled':''}>Detailed</button>
+        <button data-ren="${d.id}">Rename</button>
+        <button data-del="${d.id}">Delete</button>
+      </div>
+    </div>`).join('') : '<p class="meta">No documents yet. Upload a PDF to begin.</p>';
+}
+$('#docs').addEventListener('click', async e => {
+  const t = e.target, d = k => t.dataset[k];
+  try {
+    if (d('open')) openPdf(+d('open'), 1);
+    if (d('del') && confirm('Delete this document?')) { await api('/api/documents/'+d('del'), {method:'DELETE'}); selected.delete(+d('del')); loadDocs(); }
+    if (d('ren')) { const doc = docs.find(x => x.id == d('ren')); const n = prompt('New name', doc.name);
+      if (n) { await api('/api/documents/'+doc.id, {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name:n})}); loadDocs(); } }
+    if (d('sum')) { const [id, mode] = d('sum').split(':'); summarize(id, mode); }
+  } catch (err) { alert(err.message); }
+});
+$('#docs').addEventListener('change', e => {
+  if (e.target.dataset.sel) { const id = +e.target.dataset.sel; e.target.checked ? selected.add(id) : selected.delete(id); renderDocs(); }
+});
+
+async function upload(files) {
+  const fd = new FormData();
+  [...files].forEach(f => fd.append('files', f));
+  try { await api('/api/documents', {method:'POST', body:fd}); loadDocs(); } catch (e) { alert(e.message); }
+}
+$('#pick').onclick = () => $('#file').click();
+$('#file').onchange = e => upload(e.target.files);
+const drop = $('#drop');
+['dragover','dragenter'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
+['dragleave','drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
+drop.addEventListener('drop', e => upload(e.dataTransfer.files));
+
+/* ---------- PDF viewer (jumps to the cited page) ---------- */
+function openPdf(id, page, snippet = '') {
+  const doc = docs.find(d => d.id === id);
+  $('#pdfTitle').textContent = `${doc?.name || 'Document'} — page ${page}`;
+  $('#pdfSnip').innerHTML = snippet ? `<mark>${esc(snippet)}</mark>` : 'Document preview';
+  $('#pdfSnip').style.display = snippet ? '' : 'none';
+  // #search asks the viewer to highlight the passage (works in Firefox / some Chrome builds)
+  const words = snippet.split(' ').slice(0, 6).join(' ');
+  $('#pdfFrame').src = `/api/documents/${id}/file#page=${page}` + (words ? `&search=${encodeURIComponent(words)}` : '');
+  $('#pdfDlg').showModal();
+}
+$('#pdfClose').onclick = () => { $('#pdfDlg').close(); $('#pdfFrame').src = 'about:blank'; };
+
+/* ---------- summaries ---------- */
+async function summarize(id, mode) {
+  const doc = docs.find(d => d.id == id);
+  $('#sumTitle').textContent = `${mode === 'short' ? 'Short' : 'Detailed'} summary — ${doc.name}`;
+  $('#sumBody').textContent = 'Generating…';
+  $('#sumDlg').showModal();
+  try {
+    const s = await api(`/api/documents/${id}/summary?mode=${mode}`, {method:'POST'});
+    const list = a => '<ul>' + (a||[]).map(x => `<li>${esc(x)}</li>`).join('') + '</ul>';
+    $('#sumBody').innerHTML = `<h3>Summary</h3><p>${esc(s.summary).replace(/\n/g,'<br>')}</p>
+      <h3>Key points</h3>${list(s.key_points)}
+      <h3>Key terms</h3>${list((s.key_terms||[]).map(t => `${t.term}: ${t.definition}`))}
+      ${(s.chapter_summaries||[]).length ? '<h3>Chapter summaries</h3>' + s.chapter_summaries.map(c => `<p><b>${esc(c.title)}</b><br>${esc(c.summary)}</p>`).join('') : ''}`;
+  } catch (e) { $('#sumBody').textContent = 'Could not summarize: ' + e.message; }
+}
+$('#sumClose').onclick = () => $('#sumDlg').close();
+
+/* ---------- chat ---------- */
+function addMsg(role, content, srcs = []) {
+  const box = $('#msgs');
+  box.querySelector('.empty')?.remove();
+  const div = document.createElement('div');
+  div.className = 'msg ' + role;
+  let html = esc(content);
+  if (role === 'assistant') html = html.replace(/\[(\d+)\]/g, (m, n) => srcs.find(s => s.n == n) ? `<button class="cite" data-cite="${n}">${n}</button>` : m);
+  div.innerHTML = html;
+  if (srcs.length) {
+    const key = crypto.randomUUID(); sources[key] = srcs;
+    div.dataset.key = key;
+    srcs.forEach(s => div.insertAdjacentHTML('beforeend',
+      `<div class="src" data-n="${s.n}"><b>[${s.n}] ${esc(s.doc_name)}, page ${s.page}</b><br><span class="meta">${esc(s.text.slice(0, 180))}…</span></div>`));
+  }
+  box.appendChild(div); box.scrollTop = box.scrollHeight;
+  return div;
+}
+$('#msgs').addEventListener('click', e => {
+  const el = e.target.closest('[data-cite],[data-n]');
+  if (!el) return;
+  const n = el.dataset.cite || el.dataset.n;
+  const s = sources[el.closest('.msg').dataset.key]?.find(x => x.n == n);
+  if (s) openPdf(s.doc_id, s.page, s.text.slice(0, 300));
+});
+function emptyState() {
+  $('#msgs').innerHTML = `<div class="empty"><h2>Ask your documents anything</h2>
+    <p>Upload one or more PDFs, wait for them to show Completed, then ask a question. Answers cite the page they came from.</p></div>`;
+}
+$('#form').onsubmit = async e => {
+  e.preventDefault();
+  const question = $('#q').value.trim(); if (!question) return;
+  $('#q').value = ''; addMsg('user', question);
+  const wait = addMsg('assistant', 'Searching documents…');
+  try {
+    const r = await api('/api/chat', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({session_id: session, question, doc_ids: selected.size ? [...selected] : null})});
+    wait.remove(); addMsg('assistant', r.answer, r.sources);
+  } catch (err) { wait.textContent = 'Error: ' + err.message; }
+};
+$('#clear').onclick = async () => { await api('/api/history?session_id='+session, {method:'DELETE'}); emptyState(); };
+
+(async () => {
+  await loadDocs();
+  const h = await api('/api/history?session_id=' + session);
+  if (!h.length) emptyState(); else h.forEach(m => addMsg(m.role, m.content, m.sources));
+})();
+</script>
+</body>
+</html>
